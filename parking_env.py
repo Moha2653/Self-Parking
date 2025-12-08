@@ -201,7 +201,7 @@ if __name__ == "__main__":
     obs, reward, done, truncated, info = env.step(action)
     total_reward += reward
     if t % 20 == 0:
-      print(f"t={t}, dist={info['distancia']:.2f}, ang_err={math.degrees(info['error_angular']):.2f}, reward={reward:.2f}")
+      print(f"t={t}, distancia={info['distancia']:.2f}, error_angular={math.degrees(info['error_angular']):.2f}, reward={reward:.2f}")
     if done:
       print(f"Episodio terminado en {t}")
       break
