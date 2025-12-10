@@ -128,7 +128,7 @@ class ParkingEnv(gym.Env):
     
     if abs(x) > self.area_size or abs(y) > self.area_size:
       reward -= 50
-      DONE = True
+      done = True
     
     if dist < 0.3 and ang_err < math.radians(10) and abs(speed) < 0.5:
       reward += 200
