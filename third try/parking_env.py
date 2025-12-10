@@ -1,0 +1,221 @@
+import gymnasium as gym
+from gymnasium import spaces
+import numpy as np
+import pygame
+import math
+import random
+
+class ParkingEnv(gym.Env):
+    metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 60}
+
+    def __init__(self, render_mode=None, robustness=False):
+        super(ParkingEnv, self).__init__()
+        
+        # --- 1. Configuration ---
+        self.W, self.H = 400, 400
+        self.SPOT_W, self.SPOT_H = 65, 35
+        self.MARGIN = 20
+        self.render_mode = render_mode
+        self.robustness = robustness 
+        
+        # KEY VARIABLES (Fixed to avoid AttributeErrors)
+        self.max_steps = 800
+        self.car_w, self.car_h = 44, 22
+        
+        # --- 2. Action Space (Discrete) ---
+        # 0: Idle, 1: Fwd, 2: Back, 3: Left, 4: Right
+        self.action_space = spaces.Discrete(5)
+
+        # --- 3. Observation Space (9 values) ---
+        # [x, y, vx, vy, cos(th), sin(th), ang_vel, dx, dy]
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
+
+        # Pygame vars
+        self.window = None
+        self.clock = None
+        
+        self._init_geometry()
+
+    def _init_geometry(self):
+        self.spots = []
+        # Create 2 columns of spots
+        for col_x in [self.MARGIN, self.W - self.MARGIN - self.SPOT_W]:
+            for row in range(6):
+                y = 40 + row * (self.SPOT_H + 10)
+                self.spots.append(pygame.Rect(col_x, y, self.SPOT_W, self.SPOT_H))
+
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        
+        # A. Target Setup
+        self.target_idx = random.randint(0, len(self.spots) - 1)
+        self.target_rect = self.spots[self.target_idx]
+        self.obstacles = [s for i, s in enumerate(self.spots) if i != self.target_idx]
+        
+        # B. Car Setup (Random start at bottom)
+        start_x = self.W // 2 + random.randint(-40, 40)
+        start_y = self.H - 60
+        self.pos = [float(start_x), float(start_y)]
+        self.speed = 0.0
+        self.orientation = 90.0
+        self.ang_vel = 0.0
+        
+        # C. Reset Counters & State
+        self.steps = 0
+        self.prev_dist = math.hypot(self.target_rect.centerx - self.pos[0], 
+                                    self.target_rect.centery - self.pos[1])
+
+        # D. Robustness (Variable Friction)
+        if self.robustness:
+            self.friction = np.random.uniform(0.85, 0.96)
+        else:
+            self.friction = 0.90
+
+        return self._get_obs(), {}
+
+    def _get_obs(self):
+        rad = math.radians(self.orientation)
+        vx = self.speed * math.cos(rad)
+        vy = -self.speed * math.sin(rad)
+        
+        dx = self.target_rect.centerx - self.pos[0]
+        dy = self.target_rect.centery - self.pos[1]
+
+        obs = np.array([
+            self.pos[0] / self.W,
+            self.pos[1] / self.H,
+            vx / 5.0,
+            vy / 5.0,
+            math.cos(rad),
+            math.sin(rad),
+            self.ang_vel,
+            dx / self.W,
+            dy / self.H
+        ], dtype=np.float32)
+
+        # Robustness (Sensor Noise)
+        if self.robustness:
+            noise = np.random.normal(0, 0.02, size=obs.shape)
+            obs += noise
+
+        return obs
+
+    def step(self, action):
+        self.steps += 1
+        dt = 1/60.0
+
+        # --- 1. Physics ---
+        if action == 1: self.speed += 8 * dt        # Accelerate
+        elif action == 2: self.speed -= 8 * dt      # Reverse
+        else: self.speed *= self.friction           # Friction (Idle)
+
+        turn_factor = 130 if abs(self.speed) < 1.0 else 90
+        if action == 3: self.ang_vel = turn_factor * dt
+        elif action == 4: self.ang_vel = -turn_factor * dt
+        else: self.ang_vel = 0
+
+        self.orientation = (self.orientation + self.ang_vel) % 360
+        rad = math.radians(self.orientation)
+        self.pos[0] += self.speed * math.cos(rad)
+        self.pos[1] -= self.speed * math.sin(rad)
+
+        # --- 2. Reward Logic ---
+        reward = 0
+        terminated = False
+        truncated = False
+        
+        curr_dist = math.hypot(self.target_rect.centerx - self.pos[0], 
+                               self.target_rect.centery - self.pos[1])
+        
+        # A. Progress Reward (Encourage moving closer)
+        reward += (self.prev_dist - curr_dist) * 1.0
+        self.prev_dist = curr_dist
+        
+        # B. Living Penalty (Encourage speed)
+        reward -= 0.01
+
+        # C. Stuck Penalty (Punish not moving)
+        if abs(self.speed) < 0.05:
+            reward -= 0.05
+
+        # --- 3. Collisions ---
+        player_rect = pygame.Rect(0, 0, self.car_w, self.car_h)
+        player_rect.center = (int(self.pos[0]), int(self.pos[1]))
+        
+        crashed = False
+        # Wall
+        if not (0 < self.pos[0] < self.W and 0 < self.pos[1] < self.H): crashed = True
+        # Obstacles
+        hitbox = player_rect.inflate(-10, -10)
+        for obs in self.obstacles:
+            if hitbox.colliderect(obs): crashed = True
+        
+        if crashed:
+            reward = -50
+            terminated = True
+        
+        # --- 4. Success Check ---
+        ang_err = (self.orientation % 180)
+        if ang_err > 90: ang_err = 180 - ang_err
+        
+        is_aligned = ang_err < 20
+        is_close = curr_dist < 15
+        is_slow = abs(self.speed) < 1.0
+        
+        if is_close and is_aligned and is_slow:
+            if self.target_rect.collidepoint(self.pos[0], self.pos[1]):
+                reward += 100
+                terminated = True
+        
+        # --- 5. Timeout ---
+        if self.steps >= self.max_steps:
+            truncated = True
+
+        if self.render_mode == "human":
+            self.render()
+
+        return self._get_obs(), reward, terminated, truncated, {}
+
+    def render(self):
+        if self.window is None:
+            pygame.init()
+            self.window = pygame.display.set_mode((self.W, self.H))
+            self.clock = pygame.time.Clock()
+            self.font = pygame.font.SysFont("Arial", 14, bold=True)
+
+        canvas = pygame.Surface((self.W, self.H))
+        canvas.fill((50, 55, 60)) 
+
+        # Draw Target & Obstacles
+        for i, rect in enumerate(self.spots):
+            if i == self.target_idx:
+                pygame.draw.rect(canvas, (50, 150, 50), rect, 2)
+                lbl = self.font.render("PARK", True, (100, 200, 100))
+                canvas.blit(lbl, (rect.x + 10, rect.y + 10))
+            else:
+                color = (100 + (i*20)%150, 100, 150)
+                pygame.draw.rect(canvas, color, rect.inflate(-5,-5), border_radius=4)
+
+        # Draw 4-Door Truck
+        truck_surf = pygame.Surface((self.car_w, self.car_h), pygame.SRCALPHA)
+        # Bed
+        pygame.draw.rect(truck_surf, (160, 30, 30), (0, 0, 16, 22)) 
+        # Cab (Extended)
+        pygame.draw.rect(truck_surf, (220, 40, 40), (16, 0, 28, 22), border_radius=3)
+        # Shield
+        pygame.draw.rect(truck_surf, (80, 80, 80), (self.car_w-4, 6, 4, self.car_h-12), border_radius=2)
+        # Lights
+        pygame.draw.circle(truck_surf, (255, 255, 200), (self.car_w-1, 4), 2)
+        pygame.draw.circle(truck_surf, (255, 255, 200), (self.car_w-1, self.car_h-4), 2)
+
+        rot_truck = pygame.transform.rotate(truck_surf, self.orientation)
+        truck_rect = rot_truck.get_rect(center=(self.pos[0], self.pos[1]))
+        canvas.blit(rot_truck, truck_rect)
+
+        self.window.blit(canvas, (0, 0))
+        pygame.display.flip()
+        self.clock.tick(self.metadata["render_fps"])
+
+    def close(self):
+        if self.window is not None:
+            pygame.quit()
