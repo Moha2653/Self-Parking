@@ -11,26 +11,20 @@ class ParkingEnv(gym.Env):
     def __init__(self, render_mode=None, robustness=False):
         super(ParkingEnv, self).__init__()
        
-        # --- 1. Configuration ---
+        # Variables
         self.W, self.H = 400, 400
         self.SPOT_W, self.SPOT_H = 65, 35
         self.MARGIN = 20
         self.render_mode = render_mode
         self.robustness = robustness
        
-        # KEY VARIABLES (Fixed to avoid AttributeErrors)
         self.max_steps = 800
         self.car_w, self.car_h = 44, 22
        
-        # --- 2. Action Space (Discrete) ---
-        # 0: Idle, 1: Fwd, 2: Back, 3: Left, 4: Right
         self.action_space = spaces.Discrete(5)
  
-        # --- 3. Observation Space (9 values) ---
-        # [x, y, vx, vy, cos(th), sin(th), ang_vel, dx, dy]
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(9,), dtype=np.float32)
  
-        # Pygame vars
         self.window = None
         self.clock = None
        
@@ -38,7 +32,6 @@ class ParkingEnv(gym.Env):
  
     def _init_geometry(self):
         self.spots = []
-        # Create 2 columns of spots
         for col_x in [self.MARGIN, self.W - self.MARGIN - self.SPOT_W]:
             for row in range(6):
                 y = 40 + row * (self.SPOT_H + 10)
@@ -47,12 +40,11 @@ class ParkingEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
        
-        # A. Target Setup
         self.target_idx = random.randint(0, len(self.spots) - 1)
         self.target_rect = self.spots[self.target_idx]
         self.obstacles = [s for i, s in enumerate(self.spots) if i != self.target_idx]
        
-        # B. Car Setup (Random start at bottom)
+        #Trcuk set up
         start_x = self.W // 2 + random.randint(-40, 40)
         start_y = self.H - 60
         self.pos = [float(start_x), float(start_y)]
@@ -64,12 +56,11 @@ class ParkingEnv(gym.Env):
         self.spin_timer = 0
         self.spin_angle_accum = 0.0
  
-        # C. Reset Counters & State
         self.steps = 0
         self.prev_dist = math.hypot(self.target_rect.centerx - self.pos[0],
                                     self.target_rect.centery - self.pos[1])
  
-        # D. Robustness (Variable Friction)
+        # Random friction
         if self.robustness:
             self.friction = np.random.uniform(0.85, 0.96)
         else:
@@ -125,80 +116,77 @@ class ParkingEnv(gym.Env):
         reward = 0
         terminated = False
         truncated = False
-       
-        curr_dist = math.hypot(self.target_rect.centerx - self.pos[0],
-                               self.target_rect.centery - self.pos[1])
-       
+        
+        curr_dist = math.hypot(
+            self.target_rect.centerx - self.pos[0],
+            self.target_rect.centery - self.pos[1]
+        )
+
+        # Rewarding
         reward += (self.prev_dist - curr_dist) * 0.5
         self.prev_dist = curr_dist
+
         ang_err = (self.orientation % 180)
-        if ang_err > 90: ang_err = 180 - ang_err
-        is_aligned = ang_err < 20
-        is_close   = curr_dist < 15
-        is_slow    = abs(self.speed) < 1.0
+        if ang_err > 90: 
+            ang_err = 180 - ang_err  # error absoluto
+        reward -= (ang_err / 90) * 0.1   # normalizado
 
         if curr_dist < 50 and abs(self.speed) > 1.5:
             reward -= 1.0
-        else:
-            reward -= abs(self.speed) * 0.3
-            reward -= abs(self.ang_vel) * 0.05
-            
-            reward += 0.2 if is_aligned else -0.1
-            reward += 0.2 if is_slow else -0.1
- 
-        self.prev_dist = curr_dist
-               
-        if curr_dist < 80 and abs(self.speed) > 1.5:
-          reward -= 0.8
-        
-        # B. Living Penalty (Encourage speed)
+
         reward -= 0.01
- 
-        # C. Stuck Penalty (Punish not moving)
+
+        if curr_dist < 50 and abs(self.speed) < 0.5:
+            reward += 1.0
+
         if abs(self.speed) < 0.05:
             reward -= 0.05
- 
-        linear_movement = math.hypot(self.pos[0] - self.prev_pos[0], self.pos[1] - self.prev_pos[1])
+
+        # Spinning penalty
+        linear_movement = math.hypot(
+            self.pos[0] - self.prev_pos[0],
+            self.pos[1] - self.prev_pos[1]
+        )
         if linear_movement < 0.5:
             self.spin_timer += 1
-            self.spin_angle_accum += abs(self.ang_vel * 60)  # convert per-frame → degrees/sec
+            self.spin_angle_accum += abs(self.ang_vel * 60)
         else:
             self.spin_timer = 0
             self.spin_angle_accum = 0.0
-       
+
         if self.spin_timer > 30 or self.spin_angle_accum > 360:
-            reward -= 0.1
-            reward -= 0.01 * (self.spin_timer)
- 
+            reward -= 0.3
+
         self.prev_pos = (self.pos[0], self.pos[1])
- 
-        # --- 3. Collisions ---
+
+        #Crashing
         crashed = False
         player_rect = pygame.Rect(0, 0, self.car_w, self.car_h)
         player_rect.center = (int(self.pos[0]), int(self.pos[1]))
         hitbox = player_rect.inflate(-10, -10)
-       
-        # Wall
-        if not (0 < self.pos[0] < self.W and 0 < self.pos[1] < self.H): crashed = True
-        # Obstacles
+
+        if not (0 < self.pos[0] < self.W and 0 < self.pos[1] < self.H):
+            crashed = True
+
         for obs in self.obstacles:
-            if hitbox.colliderect(obs): crashed = True
-       
+            if hitbox.colliderect(obs):
+                crashed = True
+
         if crashed:
             reward = -50
             terminated = True
-       
-       
-        is_aligned = ang_err < 15
+
+        #Wininng
         is_close = curr_dist < 15
         is_slow = abs(self.speed) < 1.0
-       
-        if is_close and is_aligned and is_slow:
+        is_aligned = ang_err < 15
+
+        if is_close and is_slow and is_aligned:
             if self.target_rect.collidepoint(self.pos[0], self.pos[1]):
                 reward += 100
                 terminated = True
-       
-        # --- 5. Timeout ---
+
+        # --- (9) TIMEOUT ---
         if self.steps >= self.max_steps:
             truncated = True
  
@@ -234,9 +222,13 @@ class ParkingEnv(gym.Env):
 
         # Draw car
         truck_surf = pygame.Surface((self.car_w, self.car_h), pygame.SRCALPHA)
-        pygame.draw.rect(truck_surf, (160, 30, 30), (0, 0, 16, 22))
-        pygame.draw.rect(truck_surf, (220, 40, 40), (16, 0, 28, 22), border_radius=3)
-        pygame.draw.rect(truck_surf, (80, 80, 80), (self.car_w-4, 6, 4, self.car_h-12), border_radius=2)
+        pygame.draw.rect(truck_surf, (160, 30, 30), (0, 0, 20, 22)) 
+        pygame.draw.rect(truck_surf, (100, 20, 20), (2, 2, 12, 18))
+
+        pygame.draw.rect(truck_surf, (220, 40, 40), (20, 0, 28, 22), border_radius=3)
+        pygame.draw.rect(truck_surf, (180, 30, 30), (22, 2, 20, 20)) 
+        pygame.draw.rect(truck_surf, (100, 200, 255), (self.car_w - 12, 2, 7, self.car_h - 4), border_radius=2)
+
         pygame.draw.circle(truck_surf, (255, 255, 200), (self.car_w-1, 4), 2)
         pygame.draw.circle(truck_surf, (255, 255, 200), (self.car_w-1, self.car_h-4), 2)
 

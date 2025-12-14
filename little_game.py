@@ -134,9 +134,9 @@ while running:
     truck_rect = rot_truck.get_rect(center=(pos[0], pos[1]))
     screen.blit(rot_truck, truck_rect)
 
-    ui_text = [f"Angle: {int(abs(ang_err))}", f"Speed: {speed:.1f}", f"Step: {steps}"]
+    ui_text = [f"Angle: {int(abs(ang_err))}", f"Speed: {speed:.1f}", f"Step: {steps}", f"Dist to spot: {int(dist_obj)}  "]
     for i, txt in enumerate(ui_text):
-        screen.blit(font.render(txt, True, (255, 255, 255)), (5, H - 60 + i*18))
+        screen.blit(font.render(txt, True, (255, 255, 255)), (5, H - 80 + i*18))
     pygame.display.flip()
 
 if result_msg:
